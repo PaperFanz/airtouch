@@ -15,6 +15,19 @@ BLUE = (255,0,0)
 RED = (0,0,255)
 WHITE = (255,255,255)
 BLACK = (0,0,0)
+DECIMATION_FACTOR = 2
+
+def dilatation(src, size, shape):
+    dil_s = size
+    dil_t = shape
+    kern = cv.getStructuringElement(dil_t, (2*dil_s + 1, 2*dil_s+1), (dil_s, dil_s))
+    return cv.dilate(src, kern)
+
+def erosion(src, size, shape):
+    dil_s = size
+    dil_t = shape
+    kern = cv.getStructuringElement(dil_t, (2*dil_s + 1, 2*dil_s+1), (dil_s, dil_s))
+    return cv.erode(src, kern)
 
 class MinMaxPainter:
     def __init__(self, width, height):
@@ -75,14 +88,15 @@ class ContourPainter:
         self.canvas = np.zeros(shape=[self.h, self.w, 3], dtype=np.uint8)
         self.canvas[:,:,:] = 255 # initialize canvas to white
 
-        # pointer location
-        self.pointer = np.zeros(shape=[self.h, self.w, 3], dtype=np.uint8)
-
         # track running average of brush locations
         self.x_avg = int(self.w / 2)
         self.y_avg = int(self.h / 2)
         self.d_avg = 650
         self.v_avg = 0
+
+        # pointer location
+        self.pointer = (self.x_avg, self.y_avg)
+        self.pointer_rad = 0
 
         # track if we want to start a new line
         self.track_COUNT = 4 # get points before drawing a new line
@@ -93,6 +107,7 @@ class ContourPainter:
         self.tolerance = 250
         self.depth_max = 400
         self.depth_min = 900
+        self.min_tolerance = 0.1
 
         # smoothing factors
         self.al = 0.4
@@ -104,7 +119,7 @@ class ContourPainter:
         # paint color
         self.active_color = BLACK
 
-    def calibrate(self, depth, r, a, d):
+    def calibrate(self, depth, r, a, d, mt):
         self.critical_depth = depth
         self.tolerance = r
         self.depth_min = int(depth - r/2)
@@ -128,10 +143,15 @@ class ContourPainter:
         m = cv.moments(hull)
         return (int(m['m10']/m['m00']),int(m['m01']/m['m00']))
 
-    def cursor_location(self, cnt, hull, np_depth):
+    def cursor_location(self, cnt, hull, np_depth, np_color):
         mask = np.zeros(np_depth.shape,np.uint8)
-        cv.drawContours(mask,[cnt],0,255,-1)
+        cv.drawContours(mask,[hull],0,255,-1)
+        mask = dilatation(mask, 8, cv.MORPH_ELLIPSE)
         min_v, _, min_loc, _ = cv.minMaxLoc(np_depth,mask = mask)
+        close = ((abs(np_depth/(mask*min_v/255) - 1.0) < 0.10) * 255).astype(np.uint8)
+        close = erosion(close, 2, cv.MORPH_ELLIPSE)
+        if np.count_nonzero(close) > 0:
+            min_v, _, min_loc, _ = cv.minMaxLoc(np_depth,mask = close)
         return min_loc, min_v
 
     def paint(self, np_depth, np_color):
@@ -139,14 +159,16 @@ class ContourPainter:
         color_img = cv.resize(np_color, (0, 0), fx=0.5, fy=0.5)
 
         # parse out bad depth data
+        np_depth[np_depth < self.depth_min] = self.BACKGROUND
+        np_depth[np_depth > self.depth_max] = self.BACKGROUND
         depth = np_depth.copy()
-        depth[depth < 400] = self.BACKGROUND
-        depth[depth > 900] = self.BACKGROUND
 
         # reduce image scale and threshold -> this makes for a competent hand mask
-        interp = np.log(depth)
-        interp = np.interp(interp, (interp.min(), interp.max()), (0, 255)).astype(np.uint8)
+        interp = np.log(depth + 1)
+        interp = np.interp(depth, (depth.min(), depth.max()), (0, 255)).astype(np.uint8)
+        # cv.imshow("debug", interp)
         thresh = cv.adaptiveThreshold(interp, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2)
+        # cv.imshow("debug", thresh)
 
         # contours on thresholded image lets us make quantitative judgements
         cnt_img, cnt, h = cv.findContours(thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_TC89_KCOS)
@@ -155,12 +177,13 @@ class ContourPainter:
         for i in range(len(cnt)):
             hull = cv.convexHull(cnt[i], returnPoints=True)
             a = cv.contourArea(hull)
-            if a > 100 and a < 5000:
-                loc, d = self.cursor_location(cnt[i], hull, np_depth)
+            if a > 500 and a < 5000:
+                loc, d = self.cursor_location(cnt[i], hull, np_depth, np_color)
+
                 x, y = loc
 
-                color_img = cv.circle(color_img, (x, y), 5, RED, -1)
-                cv.imshow("debug", color_img)
+                img = cv.circle(color_img, loc, 5, RED, -1)
+                cv.imshow("debug", img)
                 
                 if self.track == self.track_COUNT:
                     # start tracking new pointer
@@ -168,11 +191,16 @@ class ContourPainter:
                     self.x_avg = x
                     self.y_avg = y
                     self.d_avg = d
-                    self.v_avg = 0
+                    self.v_avg = 1.0
 
                 else:
+                    x_new = 0.0
+                    y_new = 0.0
+                    d_new = 0.0
+                    v_new = 0.0
+                    
                     v = ((x - self.x_avg)**2 + (y - self.y_avg)**2)
-                    if abs(v - self.v_avg) > 10.0:
+                    if abs(v - self.v_avg) > 10.0 or abs(d - self.d_avg) > 5.0:
                         x_new = x*self.dl + self.x_avg*(1-self.dl)
                         y_new = y*self.dl + self.y_avg*(1-self.dl)
                         d_new = d*self.dl + self.d_avg*(1-self.dl)
@@ -186,13 +214,15 @@ class ContourPainter:
                     if self.track > 0:
                         # wait for new pointer to stabilize
                         self.track = self.track - 1
-                    # elif d_new > 650:
-                    #     pt_new = (int(x_new * 2), int(y_new * 2))
-                    #     self.pointer = cv.circle(self.pointer, pt_new, int(np.log(d_new - 650)), BLUE)
+                    elif d_new > self.critical_depth:
+                        # new pointer has stabilized, but we are hovering
+                        self.pointer = (int(x_new * 2), int(y_new * 2))
+                        self.pointer_rad = int(np.log(d_new - self.critical_depth) * 2)
                     else:
-                        # new pointer has stabilized, are we drawing or hovering?
-                        pt_old = (int(self.x_avg * 2), int(self.y_avg * 2))
-                        pt_new = (int(x_new * 2), int(y_new * 2))
+                        # new pointer has stabilized, and we are drawing
+                        self.pointer_rad = int(0)
+                        pt_old = (int(self.x_avg * DECIMATION_FACTOR), int(self.y_avg * DECIMATION_FACTOR))
+                        pt_new = (int(x_new * DECIMATION_FACTOR), int(y_new * DECIMATION_FACTOR))
                         self.canvas = cv.line(self.canvas, pt_old, pt_new, self.active_color, 2)
 
                     self.x_avg = x_new
@@ -205,7 +235,7 @@ class ContourPainter:
         if not found:
             self.track = self.track_COUNT
 
-        return self.canvas, self.pointer
+        return self.canvas, self.pointer, self.pointer_rad
 
 
     def get_canvas(self):
@@ -218,7 +248,7 @@ out = cv.VideoWriter("out.mp4", fourcc, 20.0, (1280,1440))
 # Configure depth and color streams
 pipe = rs.pipeline()
 config = rs.config()
-config.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
+config.enable_stream(rs.stream.depth, 848, 480, rs.format.z16, 30)
 config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
 
 # Start streaming
@@ -233,7 +263,7 @@ w, h = depth_intrinsics.width, depth_intrinsics.height
 # Processing blocks
 colorizer = rs.colorizer()
 decimate = rs.decimation_filter()
-decimate.set_option(rs.option.filter_magnitude, 2)
+decimate.set_option(rs.option.filter_magnitude, DECIMATION_FACTOR)
 spatial = rs.spatial_filter()
 temporal = rs.temporal_filter()
 hole_filling = rs.hole_filling_filter()
@@ -251,7 +281,9 @@ cv.namedWindow("Draw", cv.WINDOW_NORMAL)
 
 # painter leaning heavily on depth sensor data to accurately parse finger point
 painter = ContourPainter(1280, 720)
-painter.calibrate(650, 250, 0.6, 0.15)
+
+# depth center, depth range, smoothing alpha, smoothing delta, min tolerance
+painter.calibrate(650, 250, 0.40, 0.10, 0.15)
 
 try:
     while True:
@@ -269,7 +301,7 @@ try:
         depth = spatial.process(depth)
         depth = temporal.process(depth)
         depth = disparity_to_depth.process(depth)
-        depth = hole_filling.process(depth)
+        # depth = hole_filling.process(depth)
 
         # convert to numpy arrays for cv operations
         np_depth = np.asanyarray(depth.get_data())
@@ -277,17 +309,14 @@ try:
         np_color = np.asanyarray(color.get_data())
         np_color = cv.flip(np_color, 1)
 
-        canvas, pointer = painter.paint(np_depth, np_color)
 
-        # pointer_gray = cv.cvtColor(pointer,cv.COLOR_BGR2GRAY)
-        # ret, mask = cv.threshold(pointer_gray, 200, 255, cv.THRESH_BINARY_INV)
+        canvas, p, r = painter.paint(np_depth, np_color)
 
-        # mask_inv = cv.bitwise_not(mask)
+        cout = canvas.copy()
+        if r > 0:
+            cout = cv.circle(cout, p, r, BLACK, 2)
 
-        # canvas_out = cv.bitwise_and(canvas, canvas, mask=mask_inv)
-        # canvas_out = cv.add(canvas_out, pointer)
-
-        final = cv.vconcat([canvas, np_color])
+        final = cv.vconcat([cout, np_color])
         cv.imshow("Draw", final)
         out.write(final)
 
