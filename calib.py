@@ -15,6 +15,27 @@ BLUE = (255,0,0)
 RED = (0,0,255)
 WHITE = (255,255,255)
 BLACK = (0,0,0)
+
+PASTEL_RED = (255, 133, 133)
+PASTEL_ORANGE = (255, 200, 133)
+PASTEL_YELLOW = (252, 255, 153)
+PASTEL_GREEN = (170, 255, 153)
+PASTEL_CYAN = (112, 243, 255)
+PASTEL_BLUE = (133, 180, 255)
+PASTEL_PURPLE = (168, 153, 255)
+PASTEL_MAGENTA = (255, 173, 255)
+
+PALLETE = [
+    PASTEL_RED,
+    PASTEL_ORANGE,
+    PASTEL_YELLOW,
+    PASTEL_GREEN,
+    PASTEL_CYAN,
+    PASTEL_BLUE,
+    PASTEL_PURPLE,
+    PASTEL_MAGENTA
+]
+
 DECIMATION_FACTOR = 2
 
 def dilatation(src, size, shape):
@@ -84,9 +105,9 @@ class ContourPainter:
     def __init__(self, width, height):
         self.h = height
         self.w = width
+
         # drawing canvas
-        self.canvas = np.zeros(shape=[self.h, self.w, 3], dtype=np.uint8)
-        self.canvas[:,:,:] = 255 # initialize canvas to white
+        self.clear_canvas()
 
         # track running average of brush locations
         self.x_avg = int(self.w / 2)
@@ -117,7 +138,8 @@ class ContourPainter:
         self.BACKGROUND = 10000
 
         # paint color
-        self.active_color = BLACK
+        self.pallete_ind = 0
+        self.active_color = PALLETE[self.pallete_ind]
 
     def calibrate(self, depth, r, a, d, mt):
         self.critical_depth = depth
@@ -126,6 +148,7 @@ class ContourPainter:
         self.depth_max = int(depth + r/2)
         self.al = a
         self.dl = d
+
 
     def hull_defects(self, cnt):
         hull = cv.convexHull(cnt, returnPoints=False)
@@ -139,20 +162,30 @@ class ContourPainter:
         hull = cv.convexHull(cnt, returnPoints=True)
         return (hull, defects)
 
+
     def hull_centroid(self, hull):
         m = cv.moments(hull)
         return (int(m['m10']/m['m00']),int(m['m01']/m['m00']))
 
+
     def cursor_location(self, cnt, hull, np_depth, np_color):
         mask = np.zeros(np_depth.shape,np.uint8)
-        cv.drawContours(mask,[hull],0,255,-1)
+        cv.drawContours(mask,[cnt],0,255,-1)
+
+        # dilate to make sure we don't accidentally mask out important things
         mask = dilatation(mask, 8, cv.MORPH_ELLIPSE)
+
+        # find min location in convex hull
         min_v, _, min_loc, _ = cv.minMaxLoc(np_depth,mask = mask)
-        close = ((abs(np_depth/(mask*min_v/255) - 1.0) < 0.10) * 255).astype(np.uint8)
+        close = ((abs(np_depth/(mask*min_v/255 + 1) - 1.0) < self.min_tolerance) * 255).astype(np.uint8)
         close = erosion(close, 2, cv.MORPH_ELLIPSE)
+
         if np.count_nonzero(close) > 0:
             min_v, _, min_loc, _ = cv.minMaxLoc(np_depth,mask = close)
+        else:
+            min_loc = self.hull_centroid(hull)
         return min_loc, min_v
+
 
     def paint(self, np_depth, np_color):
         # debug use
@@ -193,6 +226,10 @@ class ContourPainter:
                     self.d_avg = d
                     self.v_avg = 1.0
 
+                    # # set new color
+                    # self.pallete_ind = (self.pallete_ind + 1) % len(PALLETE)
+                    # self.active_color = PALLETE[self.pallete_ind]
+
                 else:
                     x_new = 0.0
                     y_new = 0.0
@@ -221,9 +258,10 @@ class ContourPainter:
                     else:
                         # new pointer has stabilized, and we are drawing
                         self.pointer_rad = int(0)
+                        thickness = int(np.log(self.critical_depth - d_new + 1))
                         pt_old = (int(self.x_avg * DECIMATION_FACTOR), int(self.y_avg * DECIMATION_FACTOR))
                         pt_new = (int(x_new * DECIMATION_FACTOR), int(y_new * DECIMATION_FACTOR))
-                        self.canvas = cv.line(self.canvas, pt_old, pt_new, self.active_color, 2)
+                        self.canvas = cv.line(self.canvas, pt_old, pt_new, self.active_color, thickness)
 
                     self.x_avg = x_new
                     self.y_avg = y_new
@@ -235,11 +273,18 @@ class ContourPainter:
         if not found:
             self.track = self.track_COUNT
 
-        return self.canvas, self.pointer, self.pointer_rad
+        return self.canvas, self.pointer, self.pointer_rad, self.active_color
+
+
+    def clear_canvas(self):
+        self.canvas = np.zeros(shape=[self.h, self.w, 3], dtype=np.uint8)
+        self.canvas[:,:,:] = 12 # initialize canvas to white
 
 
     def get_canvas(self):
         return self.canvas
+
+# END CONTOURPAINTER DECLARATIONS
 
 # record mp4 of jank cajiggery drawing app
 fourcc = cv.VideoWriter_fourcc(*'mp4v')
@@ -310,11 +355,11 @@ try:
         np_color = cv.flip(np_color, 1)
 
 
-        canvas, p, r = painter.paint(np_depth, np_color)
+        canvas, p, r, c = painter.paint(np_depth, np_color)
 
         cout = canvas.copy()
         if r > 0:
-            cout = cv.circle(cout, p, r, BLACK, 2)
+            cout = cv.circle(cout, p, r, c, 2)
 
         final = cv.vconcat([cout, np_color])
         cv.imshow("Draw", final)
