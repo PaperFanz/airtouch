@@ -38,6 +38,11 @@ PALLETE = [
 
 DECIMATION_FACTOR = 2
 
+DEBUG_RAW = None
+DEBUG_POST = None
+DEBUG_MASK = None
+DEBUG_THRESH = None
+
 def dilatation(src, size, shape):
     dil_s = size
     dil_t = shape
@@ -180,6 +185,9 @@ class ContourPainter:
         close = ((abs(np_depth/(mask*min_v/255 + 1) - 1.0) < self.min_tolerance) * 255).astype(np.uint8)
         close = erosion(close, 2, cv.MORPH_ELLIPSE)
 
+        global DEBUG_MASK
+        DEBUG_MASK = close.copy()
+
         if np.count_nonzero(close) > 0:
             min_v, _, min_loc, _ = cv.minMaxLoc(np_depth,mask = close)
         else:
@@ -197,11 +205,14 @@ class ContourPainter:
         depth = np_depth.copy()
 
         # reduce image scale and threshold -> this makes for a competent hand mask
-        interp = np.log(depth + 1)
-        interp = np.interp(depth, (depth.min(), depth.max()), (0, 255)).astype(np.uint8)
+        depth = np.log(depth + 1)
+        depth = np.interp(depth, (depth.min(), depth.max()), (0, 255)).astype(np.uint8)
         # cv.imshow("debug", interp)
-        thresh = cv.adaptiveThreshold(interp, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2)
+        thresh = cv.adaptiveThreshold(depth, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2)
         # cv.imshow("debug", thresh)
+
+        global DEBUG_THRESH
+        DEBUG_THRESH = thresh.copy()
 
         # contours on thresholded image lets us make quantitative judgements
         cnt_img, cnt, h = cv.findContours(thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_TC89_KCOS)
@@ -289,6 +300,9 @@ class ContourPainter:
 # record mp4 of jank cajiggery drawing app
 fourcc = cv.VideoWriter_fourcc(*'mp4v')
 out = cv.VideoWriter("out.mp4", fourcc, 20.0, (1280,1440))
+out1 = cv.VideoWriter("out_raw.mp4", fourcc, 20.0, (1280,720))
+out2 = cv.VideoWriter("out_post.mp4", fourcc, 20.0, (640,360))
+out3 = cv.VideoWriter("out_debug.mp4", fourcc, 20.0, (640,720))
 
 # Configure depth and color streams
 pipe = rs.pipeline()
@@ -340,6 +354,9 @@ try:
         depth = frameset.get_depth_frame()
         color = frameset.get_color_frame()
 
+        np_depth = np.asanyarray(depth.get_data())
+        DEBUG_RAW = np.asanyarray(colorizer.colorize(depth).get_data())
+
         # filter noisy noisy depth data
         depth = decimate.process(depth)
         depth = depth_to_disparity.process(depth)
@@ -354,6 +371,7 @@ try:
         np_color = np.asanyarray(color.get_data())
         np_color = cv.flip(np_color, 1)
 
+        DEBUG_POST = np.asanyarray(colorizer.colorize(depth).get_data())
 
         canvas, p, r, c = painter.paint(np_depth, np_color)
 
@@ -365,6 +383,14 @@ try:
         cv.imshow("Draw", final)
         out.write(final)
 
+        if DEBUG_MASK is not None:
+            # debug1 = cv.vconcat([DEBUG_RAW, DEBUG_POST])
+            debug2 = cv.vconcat([DEBUG_THRESH, DEBUG_MASK])
+            debug2 = cv.cvtColor(debug2, cv.COLOR_GRAY2BGR)
+            out1.write(DEBUG_RAW)
+            out2.write(DEBUG_POST)
+            out3.write(debug2)
+
         key = cv.waitKey(1)
         if key in (27, ord("q")):
             break
@@ -372,3 +398,6 @@ try:
 finally:
     pipe.stop()
     out.release()
+    out1.release()
+    out2.release()
+    out3.release()
