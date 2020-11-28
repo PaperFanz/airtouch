@@ -296,9 +296,18 @@ class ContourPainter:
 # START COLORPICKER DECLARATIONS
 
 class ColorPicker:
+
     def __init__(self):
         self.count = 0
         self.color = PALLETE[0]
+        self.cap_region_x_begin=0.45  # start point/total width
+        self.cap_region_y_end=0.6  # start point/total width
+        self.threshold = 70  #  BINARY threshold
+        self.blurValue = 5  # GaussianBlur parameter
+        self.bgSubThreshold = 50
+        self.learningRate = 0
+        self.hand_cascade = cv.CascadeClassifier('Hand_haar_cascade.xml')
+        self.thresh_bg = np.zeros((200,200), dtype=np.uint8)
         return
 
     def calculateFingers(self, res, drawing):  # -> finished bool, cnt: finger count
@@ -324,66 +333,74 @@ class ColorPicker:
                 return True, cnt+1
         return False, -1
 
-    def newColor(self, np_depth, np_color):
+    def set_bg(self, np_color):
+        color = np_color.copy()[0:200,0:200]
+        gray = cv.cvtColor(color, cv.COLOR_BGR2GRAY)
+        blur = cv.GaussianBlur(gray, (self.blurValue, self.blurValue), 0) # blur for better binarization
+        ret, thresh = cv.threshold(blur, self.threshold, 255, cv.THRESH_BINARY_INV+cv.THRESH_OTSU) # binarize
+        self.thresh_bg = thresh
 
-        depth = np_depth.copy()[0:200,0:200]
-        depth[depth < 400] = 100000
-        depth[depth > 2000] = 100000
-        
-        # reduce image scale and threshold -> this makes for a competent hand mask
-        interp = np.log(depth + 1)
-        interp = np.interp(depth, (depth.min(), depth.max()), (0, 255)).astype(np.uint8)
-        # cv.imshow("debug", interp)
-        thresh = cv.adaptiveThreshold(interp, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, 11, 2)
-        _,cnt,_ = cv.findContours(thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_TC89_KCOS)
+    def newColor(self, np_depth, np_color):
+        color = np_color.copy()[0:200,0:200]
         ret = False
 
-        # RISH do ya magic
-        length = len(cnt)
+        gray = cv.cvtColor(color, cv.COLOR_BGR2GRAY)
+        blur = cv.GaussianBlur(gray, (self.blurValue, self.blurValue), 0) # blur for better binarization
+        # cv.imshow('debug', blur)
+        _, thresh = cv.threshold(blur, self.threshold, 255, cv.THRESH_BINARY_INV+cv.THRESH_OTSU) # binarize
+
+        # subtract thresholded background
+        thresh = thresh - self.thresh_bg
+
+        # fucky shit to make the threshold not garbage
+        thresh = dilatation(thresh, 3, cv.MORPH_ELLIPSE)
+        thresh = erosion(thresh, 5, cv.MORPH_CROSS)
+        thresh = dilatation(thresh, 3, cv.MORPH_CROSS)
+
+        hand = self.hand_cascade.detectMultiScale(thresh, 1.3, 5) # DETECTING HAND IN THE THRESHOLDED IMAGE
+        mask = np.zeros(thresh.shape, dtype = "uint8") # CREATING MASK
+        for (x,y,w,h) in hand: # MARKING THE DETECTED ROI
+            # cv.rectangle(img,(x,y),(x+w,y+h), (122,122,0), 2) 
+            cv.rectangle(mask, (x,y),(x+w,y+h),255,-1)
+        thresh = cv.bitwise_and(thresh, mask)
+
+        # cv.imshow('binary', thresh)
+
+        # get the coutours
+        _, contours, hierarchy = cv.findContours(thresh, cv.RETR_TREE, cv.CHAIN_APPROX_SIMPLE)
+        length = len(contours)
         maxArea = -1
         if length > 0:
-            ci = 0
             for i in range(length):  # find the biggest contour (according to area)
-                temp = cnt[i]
+                temp = contours[i]
                 area = cv.contourArea(temp)
                 if area > maxArea:
                     maxArea = area
                     ci = i
 
-            res = cnt[ci]
-            drawing = np.zeros(thresh.shape, np.uint8)
-            cv.drawContours(drawing, [res], 0, 255, 1)
-            # drawing = erosion(drawing, 3, cv.MORPH_CROSS)
-
+            res = contours[ci]
             hull = cv.convexHull(res)
-            cv.drawContours(drawing, [hull], 0, 255, 1)
-
-            cv.imshow("debug", drawing)
+            drawing = np.zeros(thresh.shape, np.uint8)
+            cv.drawContours(drawing, [res], 0, (0, 255, 0), 2)
+            cv.drawContours(drawing, [hull], 0, (0, 0, 255), 3)
 
             if self.count == 14:
-                isFinishCal,fingersCnt = self.calculateFingers(res, drawing)
+                isFinishCal,cnt = self.calculateFingers(res, drawing)
+
                 cAreaHull = cv.contourArea(hull)
                 cAreaRes = cv.contourArea(res)
-                ratio = 0.0
-
-                if cAreaRes == 0:
-                    ratio = np.inf  
-                else:
-                    ratio = ((cAreaHull - cAreaRes) / cAreaRes) * 100
-                    
+                ratio = ((cAreaHull - cAreaRes) / cAreaRes) * 100 if cAreaRes != 0 else np.inf
                 if ratio < 12:
-                    fingersCnt = 0   
-                                 
-                print("There are this many fingers: " + str(fingersCnt)) # <------------- THE ANSWER
+                    cnt = 0                    
+                # print("There are this many fingers: " + str(cnt)) # <------------- THE ANSWER
                 ret = True
-                if fingersCnt == -1:
+                if cnt == -1:
                     ret = False
                 else:
-                    self.color = PALLETE[fingersCnt]
-                # cv.imshow('output', drawing)
+                    self.color = PALLETE[cnt]
             
             self.count = (self.count + 1) % 15
-
+        
         return ret
 
     def getColor(self):
@@ -479,6 +496,8 @@ try:
         key = cv.waitKey(1)
         if key in (27, ord("q")):
             break
+        elif key == ord('b'):  # press 'b' to capture the background
+            picker.set_bg(np_color)
 
 finally:
     pipe.stop()
