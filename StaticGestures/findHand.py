@@ -75,8 +75,8 @@ while camera.isOpened():
     #  Main operation
     if isBgCaptured == 1:  # this part wont run until background captured
         img = removeBG(frame)
-        img = img[0:int(cap_region_y_end * frame.shape[0]),
-                0:int(cap_region_x_begin * frame.shape[1])]  # clip the ROI
+        # img = img[0:int(cap_region_y_end * frame.shape[0]),
+        #         0:int(cap_region_x_begin * frame.shape[1])]  # clip the ROI
         cv2.imshow('removeBG', img)
 
         # convert the image into binary image
@@ -94,9 +94,17 @@ while camera.isOpened():
 
         cv2.imshow('binary', img_bin)
 
+        hand_cascade = cv2.CascadeClassifier('Hand_haar_cascade.xml')
+        hand = hand_cascade.detectMultiScale(thresh, 1.3, 5) # DETECTING HAND IN THE THRESHOLDE IMAGE
+        mask = np.zeros(thresh.shape, dtype = "uint8") # CREATING MASK
+        for (x,y,w,h) in hand: # MARKING THE DETECTED ROI
+            cv2.rectangle(img,(x,y),(x+w,y+h), (122,122,0), 2) 
+            cv2.rectangle(mask, (x,y),(x+w,y+h),255,-1)
+        thresh = cv2.bitwise_and(thresh, mask)
+
         # get the coutours
         thresh1 = copy.deepcopy(thresh)
-        _, contours, hierarchy = cv2.findContours(thresh1, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        contours, hierarchy = cv2.findContours(thresh1, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         length = len(contours)
         maxArea = -1
         if length > 0:
