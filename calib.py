@@ -215,8 +215,8 @@ class ContourPainter:
 
                 x, y = loc
 
-                img = cv.circle(color_img, loc, 5, RED, -1)
-                cv.imshow("debug", img)
+                # img = cv.circle(color_img, loc, 5, RED, -1)
+                # cv.imshow("debug", img)
                 
                 if self.track == self.track_COUNT:
                     # start tracking new pointer
@@ -293,7 +293,7 @@ out = cv.VideoWriter("out.mp4", fourcc, 20.0, (1280,1440))
 # Configure depth and color streams
 pipe = rs.pipeline()
 config = rs.config()
-config.enable_stream(rs.stream.depth, 848, 480, rs.format.z16, 30)
+config.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
 config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
 
 # Start streaming
@@ -328,7 +328,7 @@ cv.namedWindow("Draw", cv.WINDOW_NORMAL)
 painter = ContourPainter(1280, 720)
 
 # depth center, depth range, smoothing alpha, smoothing delta, min tolerance
-painter.calibrate(650, 250, 0.40, 0.10, 0.15)
+painter.calibrate(650, 250, 0.30, 0.12, 0.15)
 
 try:
     while True:
