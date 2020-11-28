@@ -5,6 +5,7 @@
 import math
 import time
 import cv2 as cv
+import copy
 import numpy as np
 import pyrealsense2 as rs
 
@@ -169,8 +170,11 @@ class ContourPainter:
 
 
     def cursor_location(self, cnt, hull, np_depth, np_color):
-        mask = np.zeros(np_depth.shape,np.uint8)
+        mask = np.zeros(np_depth.shape, np.uint8)
         cv.drawContours(mask,[cnt],0,255,-1)
+
+        # img = cv.bitwise_and(np_color, np_color, mask=mask)
+        # cv.imshow("debug", img)
 
         # dilate to make sure we don't accidentally mask out important things
         mask = dilatation(mask, 8, cv.MORPH_ELLIPSE)
@@ -211,12 +215,12 @@ class ContourPainter:
             hull = cv.convexHull(cnt[i], returnPoints=True)
             a = cv.contourArea(hull)
             if a > 500 and a < 5000:
-                loc, d = self.cursor_location(cnt[i], hull, np_depth, np_color)
+                loc, d = self.cursor_location(cnt[i], hull, np_depth, color_img)
 
                 x, y = loc
 
-                img = cv.circle(color_img, loc, 5, RED, -1)
-                cv.imshow("debug", img)
+                # img = cv.circle(color_img, loc, 5, RED, -1)
+                # cv.imshow("debug", img)
                 
                 if self.track == self.track_COUNT:
                     # start tracking new pointer
@@ -284,7 +288,108 @@ class ContourPainter:
     def get_canvas(self):
         return self.canvas
 
+    def set_color(self, color):
+        self.active_color = color
+
 # END CONTOURPAINTER DECLARATIONS
+
+# START COLORPICKER DECLARATIONS
+
+class ColorPicker:
+    def __init__(self):
+        self.count = 0
+        self.color = PALLETE[0]
+        return
+
+    def calculateFingers(self, res, drawing):  # -> finished bool, cnt: finger count
+        #  convexity defect
+        hull = cv.convexHull(res, returnPoints=False)
+        if len(hull) > 3:
+            defects = cv.convexityDefects(res, hull)
+            if type(defects) != type(None):  # avoid crashing. 
+
+                cnt = 0
+                for i in range(defects.shape[0]):  # calculate the angle
+                    s, e, f, d = defects[i][0]
+                    start = tuple(res[s][0])
+                    end = tuple(res[e][0])
+                    far = tuple(res[f][0])
+                    a = math.sqrt((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2)
+                    b = math.sqrt((far[0] - start[0]) ** 2 + (far[1] - start[1]) ** 2)
+                    c = math.sqrt((end[0] - far[0]) ** 2 + (end[1] - far[1]) ** 2)
+                    angle = math.acos((b ** 2 + c ** 2 - a ** 2) / (2 * b * c))  # cosine theorem
+                    if angle <= math.pi / 2:  # angle less than 90 degree, treat as fingers
+                        cnt += 1
+                        cv.circle(drawing, far, 8, [211, 84, 0], -1)
+                return True, cnt+1
+        return False, -1
+
+    def newColor(self, np_depth, np_color):
+
+        depth = np_depth.copy()[0:200,0:200]
+        depth[depth < 400] = 100000
+        depth[depth > 2000] = 100000
+        
+        # reduce image scale and threshold -> this makes for a competent hand mask
+        interp = np.log(depth + 1)
+        interp = np.interp(depth, (depth.min(), depth.max()), (0, 255)).astype(np.uint8)
+        # cv.imshow("debug", interp)
+        thresh = cv.adaptiveThreshold(interp, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY_INV, 11, 2)
+        _,cnt,_ = cv.findContours(thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_TC89_KCOS)
+        ret = False
+
+        # RISH do ya magic
+        length = len(cnt)
+        maxArea = -1
+        if length > 0:
+            ci = 0
+            for i in range(length):  # find the biggest contour (according to area)
+                temp = cnt[i]
+                area = cv.contourArea(temp)
+                if area > maxArea:
+                    maxArea = area
+                    ci = i
+
+            res = cnt[ci]
+            drawing = np.zeros(thresh.shape, np.uint8)
+            cv.drawContours(drawing, [res], 0, 255, 1)
+            # drawing = erosion(drawing, 3, cv.MORPH_CROSS)
+
+            hull = cv.convexHull(res)
+            cv.drawContours(drawing, [hull], 0, 255, 1)
+
+            cv.imshow("debug", drawing)
+
+            if self.count == 14:
+                isFinishCal,fingersCnt = self.calculateFingers(res, drawing)
+                cAreaHull = cv.contourArea(hull)
+                cAreaRes = cv.contourArea(res)
+                ratio = 0.0
+
+                if cAreaRes == 0:
+                    ratio = np.inf  
+                else:
+                    ratio = ((cAreaHull - cAreaRes) / cAreaRes) * 100
+                    
+                if ratio < 12:
+                    fingersCnt = 0   
+                                 
+                print("There are this many fingers: " + str(fingersCnt)) # <------------- THE ANSWER
+                ret = True
+                if fingersCnt == -1:
+                    ret = False
+                else:
+                    self.color = PALLETE[fingersCnt]
+                # cv.imshow('output', drawing)
+            
+            self.count = (self.count + 1) % 15
+
+        return ret
+
+    def getColor(self):
+        return self.color
+
+# END COLORPICKER DECLARATIONS
 
 # record mp4 of jank cajiggery drawing app
 fourcc = cv.VideoWriter_fourcc(*'mp4v')
@@ -293,7 +398,7 @@ out = cv.VideoWriter("out.mp4", fourcc, 20.0, (1280,1440))
 # Configure depth and color streams
 pipe = rs.pipeline()
 config = rs.config()
-config.enable_stream(rs.stream.depth, 848, 480, rs.format.z16, 30)
+config.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
 config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
 
 # Start streaming
@@ -328,7 +433,10 @@ cv.namedWindow("Draw", cv.WINDOW_NORMAL)
 painter = ContourPainter(1280, 720)
 
 # depth center, depth range, smoothing alpha, smoothing delta, min tolerance
-painter.calibrate(650, 250, 0.40, 0.10, 0.15)
+painter.calibrate(650, 250, 0.30, 0.12, 0.15)
+
+# contour based color picker/finger counter
+picker = ColorPicker()
 
 try:
     while True:
@@ -354,6 +462,8 @@ try:
         np_color = np.asanyarray(color.get_data())
         np_color = cv.flip(np_color, 1)
 
+        if picker.newColor(np_depth, np_color):
+            painter.set_color(picker.getColor())
 
         canvas, p, r, c = painter.paint(np_depth, np_color)
 
@@ -361,6 +471,7 @@ try:
         if r > 0:
             cout = cv.circle(cout, p, r, c, 2)
 
+        np_color = cv.rectangle(np_color, (0,0), (200,200), RED, thickness=4)
         final = cv.vconcat([cout, np_color])
         cv.imshow("Draw", final)
         out.write(final)
