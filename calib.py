@@ -185,8 +185,8 @@ class ContourPainter:
         close = ((abs(np_depth/(mask*min_v/255 + 1) - 1.0) < self.min_tolerance) * 255).astype(np.uint8)
         close = erosion(close, 2, cv.MORPH_ELLIPSE)
 
-        global DEBUG_MASK
-        DEBUG_MASK = close.copy()
+        # global DEBUG_MASK
+        # DEBUG_MASK = close.copy()
 
         if np.count_nonzero(close) > 0:
             min_v, _, min_loc, _ = cv.minMaxLoc(np_depth,mask = close)
@@ -211,8 +211,8 @@ class ContourPainter:
         thresh = cv.adaptiveThreshold(depth, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY_INV, 11, 2)
         # cv.imshow("debug", thresh)
 
-        global DEBUG_THRESH
-        DEBUG_THRESH = thresh.copy()
+        # global DEBUG_THRESH
+        # DEBUG_THRESH = thresh.copy()
 
         # contours on thresholded image lets us make quantitative judgements
         cnt_img, cnt, h = cv.findContours(thresh, cv.RETR_EXTERNAL, cv.CHAIN_APPROX_TC89_KCOS)
@@ -247,17 +247,24 @@ class ContourPainter:
                     d_new = 0.0
                     v_new = 0.0
                     
-                    v = ((x - self.x_avg)**2 + (y - self.y_avg)**2)
-                    if abs(v - self.v_avg) > 10.0 or abs(d - self.d_avg) > 5.0:
-                        x_new = x*self.dl + self.x_avg*(1-self.dl)
-                        y_new = y*self.dl + self.y_avg*(1-self.dl)
-                        d_new = d*self.dl + self.d_avg*(1-self.dl)
-                        v_new = (v*self.dl + self.v_avg*(1-self.dl))
-                    else:
-                        x_new = x*self.al + self.x_avg*(1-self.al)
-                        y_new = y*self.al + self.y_avg*(1-self.al)
-                        d_new = d*self.al + self.d_avg*(1-self.al)
-                        v_new = (v*self.al + self.v_avg*(1-self.al))
+                    v = np.sqrt((x - self.x_avg)**2 + (y - self.y_avg)**2)
+                    a = (1-(np.log(v+1))/(v+1))*self.al
+                    # print(a)
+                    # if abs(v - self.v_avg) > 10.0 or abs(d - self.d_avg) > 5.0:
+                    #     x_new = x*self.dl + self.x_avg*(1-self.dl)
+                    #     y_new = y*self.dl + self.y_avg*(1-self.dl)
+                    #     d_new = d*self.dl + self.d_avg*(1-self.dl)
+                    #     v_new = (v*self.dl + self.v_avg*(1-self.dl))
+                    # else:
+                    #     x_new = x*self.al + self.x_avg*(1-self.al)
+                    #     y_new = y*self.al + self.y_avg*(1-self.al)
+                    #     d_new = d*self.al + self.d_avg*(1-self.al)
+                    #     v_new = (v*self.al + self.v_avg*(1-self.al))
+
+                    x_new = x*a + self.x_avg*(1-a)
+                    y_new = y*a + self.y_avg*(1-a)
+                    d_new = d*a + self.d_avg*(1-a)
+                    v_new = (v*a + self.v_avg*(1-a))
 
                     if self.track > 0:
                         # wait for new pointer to stabilize
@@ -300,9 +307,9 @@ class ContourPainter:
 # record mp4 of jank cajiggery drawing app
 fourcc = cv.VideoWriter_fourcc(*'mp4v')
 out = cv.VideoWriter("out.mp4", fourcc, 20.0, (1280,1440))
-out1 = cv.VideoWriter("out_raw.mp4", fourcc, 20.0, (1280,720))
-out2 = cv.VideoWriter("out_post.mp4", fourcc, 20.0, (640,360))
-out3 = cv.VideoWriter("out_debug.mp4", fourcc, 20.0, (640,720))
+# out1 = cv.VideoWriter("out_raw.mp4", fourcc, 20.0, (1280,720))
+# out2 = cv.VideoWriter("out_post.mp4", fourcc, 20.0, (640,360))
+# out3 = cv.VideoWriter("out_debug.mp4", fourcc, 20.0, (640,720))
 
 # Configure depth and color streams
 pipe = rs.pipeline()
@@ -342,7 +349,7 @@ cv.namedWindow("Draw", cv.WINDOW_NORMAL)
 painter = ContourPainter(1280, 720)
 
 # depth center, depth range, smoothing alpha, smoothing delta, min tolerance
-painter.calibrate(650, 250, 0.30, 0.12, 0.15)
+painter.calibrate(650, 250, 0.20, 0.12, 0.15)
 
 try:
     while True:
@@ -354,8 +361,8 @@ try:
         depth = frameset.get_depth_frame()
         color = frameset.get_color_frame()
 
-        np_depth = np.asanyarray(depth.get_data())
-        DEBUG_RAW = np.asanyarray(colorizer.colorize(depth).get_data())
+        # np_depth = np.asanyarray(depth.get_data())
+        # DEBUG_RAW = np.asanyarray(colorizer.colorize(depth).get_data())
 
         # filter noisy noisy depth data
         depth = decimate.process(depth)
@@ -371,7 +378,7 @@ try:
         np_color = np.asanyarray(color.get_data())
         np_color = cv.flip(np_color, 1)
 
-        DEBUG_POST = np.asanyarray(colorizer.colorize(depth).get_data())
+        # DEBUG_POST = np.asanyarray(colorizer.colorize(depth).get_data())
 
         canvas, p, r, c = painter.paint(np_depth, np_color)
 
@@ -383,13 +390,13 @@ try:
         cv.imshow("Draw", final)
         out.write(final)
 
-        if DEBUG_MASK is not None:
-            # debug1 = cv.vconcat([DEBUG_RAW, DEBUG_POST])
-            debug2 = cv.vconcat([DEBUG_THRESH, DEBUG_MASK])
-            debug2 = cv.cvtColor(debug2, cv.COLOR_GRAY2BGR)
-            out1.write(DEBUG_RAW)
-            out2.write(DEBUG_POST)
-            out3.write(debug2)
+        # if DEBUG_MASK is not None:
+        #     # debug1 = cv.vconcat([DEBUG_RAW, DEBUG_POST])
+        #     debug2 = cv.vconcat([DEBUG_THRESH, DEBUG_MASK])
+        #     debug2 = cv.cvtColor(debug2, cv.COLOR_GRAY2BGR)
+        #     out1.write(DEBUG_RAW)
+        #     out2.write(DEBUG_POST)
+        #     out3.write(debug2)
 
         key = cv.waitKey(1)
         if key in (27, ord("q")):
@@ -398,6 +405,6 @@ try:
 finally:
     pipe.stop()
     out.release()
-    out1.release()
-    out2.release()
-    out3.release()
+    # out1.release()
+    # out2.release()
+    # out3.release()
