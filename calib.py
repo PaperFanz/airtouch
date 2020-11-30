@@ -110,6 +110,7 @@ class ContourPainter:
     def __init__(self, width, height):
         self.h = height
         self.w = width
+        self.pallete_height = 40
 
         # drawing canvas
         self.clear_canvas()
@@ -272,11 +273,16 @@ class ContourPainter:
                     elif d_new > self.critical_depth:
                         # new pointer has stabilized, but we are hovering
                         self.pointer = (int(x_new * 2), int(y_new * 2))
-                        self.pointer_rad = int(np.log(d_new - self.critical_depth) * 2)
+                        self.pointer_rad = int(np.log(d_new - self.critical_depth + 1) * 2)
+
+                        # set color based on pointer location
+                        x, y = self.pointer
+                        if y <= self.pallete_height:
+                            self.active_color = PALLETE[int(x / (self.w / len(PALLETE)))]
                     else:
                         # new pointer has stabilized, and we are drawing
                         self.pointer_rad = int(0)
-                        thickness = int(np.log(self.critical_depth - d_new + 1))
+                        thickness = int(np.log(self.critical_depth - d_new + 1) * 2)
                         pt_old = (int(self.x_avg * DECIMATION_FACTOR), int(self.y_avg * DECIMATION_FACTOR))
                         pt_new = (int(x_new * DECIMATION_FACTOR), int(y_new * DECIMATION_FACTOR))
                         self.canvas = cv.line(self.canvas, pt_old, pt_new, self.active_color, thickness)
@@ -291,16 +297,30 @@ class ContourPainter:
         if not found:
             self.track = self.track_COUNT
 
-        return self.canvas, self.pointer, self.pointer_rad, self.active_color
+        return
 
 
     def clear_canvas(self):
         self.canvas = np.zeros(shape=[self.h, self.w, 3], dtype=np.uint8)
         self.canvas[:,:,:] = 12 # initialize canvas to white
+        return
 
 
     def get_canvas(self):
-        return self.canvas
+        # don't overwrite canvas
+        cout = self.canvas.copy()
+
+        # draw cursor hover
+        if self.pointer_rad > 0:
+            cout = cv.circle(cout, self.pointer, self.pointer_rad, self.active_color, 2)
+
+        # draw color pallete
+        for i in range(len(PALLETE)):
+            s = (int(i * self.w / len(PALLETE)), 0)
+            e = (int((i + 1) * self.w / len(PALLETE)), self.pallete_height)
+            cout = cv.rectangle(cout, s, e, PALLETE[i], -1)
+
+        return cout
 
 # END CONTOURPAINTER DECLARATIONS
 
@@ -349,7 +369,7 @@ cv.namedWindow("Draw", cv.WINDOW_NORMAL)
 painter = ContourPainter(1280, 720)
 
 # depth center, depth range, smoothing alpha, smoothing delta, min tolerance
-painter.calibrate(650, 250, 0.20, 0.12, 0.15)
+painter.calibrate(650, 250, 0.15, 0.12, 0.15)
 
 try:
     while True:
@@ -380,13 +400,10 @@ try:
 
         # DEBUG_POST = np.asanyarray(colorizer.colorize(depth).get_data())
 
-        canvas, p, r, c = painter.paint(np_depth, np_color)
+        painter.paint(np_depth, np_color)
 
-        cout = canvas.copy()
-        if r > 0:
-            cout = cv.circle(cout, p, r, c, 2)
-
-        final = cv.vconcat([cout, np_color])
+        # final = cv.vconcat([cout, np_color])
+        final = painter.get_canvas()
         cv.imshow("Draw", final)
         out.write(final)
 
